@@ -45,20 +45,16 @@ app.post('/call', async (req, res) => {
   const cleanNumber = number.replace(/[^0-9+]/g, '');
 
   try {
-    // Push to ntfy.sh — completely free, no account needed
+    // ntfy expects the payload in its "message" field (or plain text body).
+    // Custom keys like { number, agent } are NOT forwarded as the message text.
     const response = await fetch(`https://ntfy.sh/${topic}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Title': 'Incoming Call Request',
-        'Tags': 'phone',
-        // The number is in the message body so the Android app can parse it
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        number: cleanNumber,
-        agent: agentId,
-        timestamp: Date.now()
-      })
+        message: cleanNumber,
+        title: 'Incoming Call Request',
+        tags: ['phone'],
+      }),
     });
 
     if (!response.ok) {
