@@ -63,4 +63,5 @@ Railway redeploys automatically on push to `main`.
 
 - **502 / Application failed to respond** — Service → Deployments → View logs. Start command must be `npm start`.
 - **404 on /** — Ensure `index.html` and `server.js` are in the repo root on GitHub.
-- **Agent not registered** — Agent must `POST /register` again after each Railway restart (in-memory store).
+- **Agent not registered** — Railway restarted and wiped the registry. Have the agent **open the CallBridge app** once (it re-syncs automatically). Or check `https://YOUR-URL/agents` — list should show their name after they open the app.
+- **Agents lost after every deploy** — Add a Railway **Volume** mounted at `/data`, then set variable `DATA_DIR=/data` on the service so `agents.json` survives redeploys.
