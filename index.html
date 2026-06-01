@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PhoneLink – Make Phone Numbers Clickable Anywhere</title>
+  <meta name="description" content="Make phone numbers clickable in Google Sheets, Docs & Slides. Paste any number and instantly launch your phone dialer — no app needed." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg:       #07080f;
+      --surface:  #0e1120;
+      --card:     #131629;
+      --border:   #1e2440;
+      --accent:   #4f8ef7;
+      --accent2:  #7c3aed;
+      --green:    #22c55e;
+      --red:      #ef4444;
+      --text:     #e2e8f0;
+      --muted:    #64748b;
+      --code-bg:  #0a0d1a;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ─── CALLING SCREEN (shown when ?number= is in URL) ─── */
+    #calling-screen {
+      display: none;
+      position: fixed; inset: 0;
+      background: var(--bg);
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+      gap: 24px;
+    }
+    #calling-screen.active { display: flex; }
+
+    .call-ring {
+      width: 120px; height: 120px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--green));
+      display: flex; align-items: center; justify-content: center;
+      font-size: 48px;
+      animation: pulse-ring 1.5s ease-in-out infinite;
+      box-shadow: 0 0 0 0 rgba(79,142,247,0.7);
+    }
+    .call-ring.error {
+      background: linear-gradient(135deg, var(--red), #b91c1c);
+      animation: none;
+    }
+    .call-ring.success {
+      background: linear-gradient(135deg, var(--green), #16a34a);
+      animation: none;
+    }
+    @keyframes pulse-ring {
+      0%   { box-shadow: 0 0 0 0 rgba(79,142,247,0.7); }
+      70%  { box-shadow: 0 0 0 30px rgba(79,142,247,0); }
+      100% { box-shadow: 0 0 0 0 rgba(79,142,247,0); }
+    }
+    .call-number {
+      font-size: 2rem; font-weight: 700; color: var(--text);
+      font-family: 'JetBrains Mono', monospace;
+      letter-spacing: 0.05em;
+    }
+    #status-line {
+      font-size: 0.95rem; color: var(--muted);
+      max-width: 320px; line-height: 1.6; text-align: center;
+    }
+    #status-line.ok  { color: var(--green); }
+    #status-line.err { color: var(--red); }
+    .call-close-hint {
+      margin-top: 12px;
+      font-size: 0.8rem; color: var(--muted);
+      opacity: 0.6;
+    }
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      display: inline-block; vertical-align: middle; margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ─── LANDING PAGE ─── */
+    #landing { display: block; }
+
+    /* Navbar */
+    nav {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(7,8,15,0.8);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 32px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .nav-logo {
+      display: flex; align-items: center; gap: 10px;
+      font-size: 1.1rem; font-weight: 700;
+      color: var(--text);
+      text-decoration: none;
+    }
+    .nav-logo span { color: var(--accent); }
+    .nav-badge {
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #fff; font-size: 0.65rem; font-weight: 600;
+      padding: 2px 8px; border-radius: 99px; letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    /* Hero */
+    .hero {
+      position: relative;
+      min-height: 92vh;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      text-align: center;
+      padding: 80px 24px 60px;
+      overflow: hidden;
+    }
+    .hero::before {
+      content: '';
+      position: absolute; inset: 0;
+      background:
+        radial-gradient(ellipse 60% 50% at 50% 0%, rgba(79,142,247,0.12) 0%, transparent 70%),
+        radial-gradient(ellipse 40% 40% at 80% 80%, rgba(124,58,237,0.08) 0%, transparent 60%);
+      pointer-events: none;
+    }
+    .hero-chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 0.78rem; font-weight: 500;
+      padding: 6px 14px; border-radius: 99px;
+      margin-bottom: 28px;
+    }
+    .hero-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+    h1 {
+      font-size: clamp(2.2rem, 5vw, 3.8rem);
+      font-weight: 800;
+      line-height: 1.15;
+      letter-spacing: -0.02em;
+      margin-bottom: 20px;
+      max-width: 800px;
+    }
+    h1 .gradient {
+      background: linear-gradient(90deg, var(--accent), #a78bfa);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .hero-sub {
+      font-size: 1.1rem;
+      color: var(--muted);
+      max-width: 560px;
+      line-height: 1.7;
+      margin-bottom: 40px;
+    }
+
+    /* Dial Box */
+    .dial-box {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 32px;
+      width: 100%; max-width: 480px;
+      box-shadow: 0 24px 60px rgba(0,0,0,0.5);
+      position: relative;
+    }
+    .dial-box::before {
+      content: '';
+      position: absolute; inset: -1px;
+      border-radius: 21px;
+      background: linear-gradient(135deg, rgba(79,142,247,0.3), rgba(124,58,237,0.2), transparent);
+      z-index: -1;
+    }
+    .dial-label {
+      font-size: 0.8rem; font-weight: 600; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.1em;
+      margin-bottom: 10px;
+    }
+    .dial-input-wrap {
+      display: flex; gap: 10px;
+    }
+    #phone-input {
+      flex: 1;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 1rem;
+      padding: 12px 16px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    #phone-input::placeholder { color: var(--muted); }
+    #phone-input:focus { border-color: var(--accent); }
+    #call-btn {
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #fff;
+      border: none; border-radius: 10px;
+      font-size: 1.1rem;
+      padding: 12px 18px;
+      cursor: pointer;
+      transition: transform 0.15s, opacity 0.15s;
+      display: flex; align-items: center;
+    }
+    #call-btn:hover { transform: scale(1.06); }
+    #call-btn:active { transform: scale(0.97); opacity: 0.9; }
+    .dial-hint {
+      margin-top: 12px;
+      font-size: 0.78rem; color: var(--muted);
+      text-align: center;
+    }
+    .dial-hint a { color: var(--accent); text-decoration: none; }
+
+    /* Scroll indicator */
+    .scroll-hint {
+      margin-top: 56px;
+      display: flex; flex-direction: column; align-items: center; gap: 6px;
+      color: var(--muted); font-size: 0.75rem;
+    }
+    .scroll-arrow {
+      width: 20px; height: 20px;
+      border-right: 2px solid var(--muted);
+      border-bottom: 2px solid var(--muted);
+      transform: rotate(45deg);
+      animation: bounce 1.4s ease infinite;
+    }
+    @keyframes bounce {
+      0%, 100% { transform: rotate(45deg) translateY(0); }
+      50%       { transform: rotate(45deg) translateY(5px); }
+    }
+
+    /* ─── CONTENT SECTIONS ─── */
+    .section {
+      max-width: 860px; margin: 0 auto;
+      padding: 80px 24px;
+    }
+    .section-tag {
+      font-size: 0.75rem; font-weight: 700;
+      color: var(--accent);
+      text-transform: uppercase; letter-spacing: 0.12em;
+      margin-bottom: 10px;
+    }
+    h2 {
+      font-size: clamp(1.5rem, 3vw, 2rem);
+      font-weight: 700; margin-bottom: 14px;
+    }
+    h3 {
+      font-size: 1.1rem; font-weight: 600;
+      margin-bottom: 10px; margin-top: 28px;
+      color: var(--text);
+    }
+    p { color: var(--muted); line-height: 1.75; margin-bottom: 16px; }
+
+    /* Cards */
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px; margin-top: 32px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      transition: border-color 0.2s, transform 0.2s;
+    }
+    .card:hover { border-color: var(--accent); transform: translateY(-3px); }
+    .card-icon { font-size: 2rem; margin-bottom: 14px; }
+    .card h3 { margin-top: 0; font-size: 1rem; }
+    .card p { font-size: 0.88rem; margin-bottom: 0; }
+
+    /* Code blocks */
+    .code-block {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px 22px;
+      margin: 16px 0;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.88rem;
+      color: #a5f3fc;
+      overflow-x: auto;
+      position: relative;
+    }
+    .code-block .comment { color: #4a5568; }
+    .code-block .kw { color: #c084fc; }
+    .code-block .fn { color: #60a5fa; }
+    .code-block .str { color: #34d399; }
+    .copy-btn {
+      position: absolute; top: 12px; right: 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.72rem; font-weight: 600;
+      padding: 4px 10px; border-radius: 6px;
+      cursor: pointer;
+      transition: color 0.2s, border-color 0.2s;
+      font-family: 'Inter', sans-serif;
+    }
+    .copy-btn:hover { color: var(--accent); border-color: var(--accent); }
+    .copy-btn.copied { color: var(--green); border-color: var(--green); }
+
+    /* Steps */
+    .steps { list-style: none; counter-reset: steps; margin-top: 20px; }
+    .steps li {
+      counter-increment: steps;
+      display: flex; gap: 16px;
+      padding: 20px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .steps li:last-child { border-bottom: none; }
+    .step-num {
+      flex-shrink: 0;
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #fff;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.8rem; font-weight: 700;
+    }
+    .step-num::before { content: counter(steps); }
+    .step-body h3 { margin-top: 4px; font-size: 0.95rem; }
+    .step-body p { font-size: 0.88rem; margin-bottom: 0; }
+
+    /* Divider */
+    .divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 0;
+    }
+
+    /* Workaround badges */
+    .workaround {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 16px;
+      margin: 8px 0;
+      font-size: 0.88rem;
+      width: 100%;
+    }
+    .workaround-badge {
+      background: var(--accent);
+      color: #fff;
+      font-size: 0.7rem; font-weight: 700;
+      padding: 2px 8px; border-radius: 6px;
+      white-space: nowrap;
+    }
+
+    /* Footer */
+    footer {
+      text-align: center;
+      padding: 40px 24px;
+      color: var(--muted);
+      font-size: 0.82rem;
+      border-top: 1px solid var(--border);
+    }
+    footer a { color: var(--accent); text-decoration: none; }
+
+    @media (max-width: 600px) {
+      nav { padding: 14px 16px; }
+      .dial-box { padding: 22px 16px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════
+     CALLING SCREEN (shown when ?number= exists)
+     ══════════════════════════════════════════ -->
+<div id="calling-screen">
+  <div class="call-ring" id="ring-icon">📞</div>
+  <div class="call-number" id="cs-number"></div>
+  <div id="status-line">Opening your phone dialer…</div>
+  <div class="call-close-hint" id="close-hint">This tab will close automatically.</div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     LANDING PAGE
+     ══════════════════════════════════════════ -->
+<div id="landing">
+
+  <nav>
+    <a href="#" class="nav-logo">📞 <span>Phone</span>Link</a>
+    <span class="nav-badge">Free & Open</span>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="hero-chip">
+      <span class="dot"></span>
+      Works on Google Sheets, Docs &amp; Slides
+    </div>
+    <h1>Make Any Phone Number <br/><span class="gradient">Instantly Callable</span></h1>
+    <p class="hero-sub">
+      Paste a number below to launch your dialer right now — or use this service
+      inside Google Sheets &amp; Docs to create one-click call links.
+    </p>
+
+    <!-- Dial Box -->
+    <div class="dial-box">
+      <div class="dial-label">Dial a number now</div>
+      <div class="dial-input-wrap">
+        <input id="phone-input" type="tel" placeholder="+1 650 253 0000" autocomplete="tel" />
+        <button id="call-btn" title="Call" onclick="manualDial()">📞</button>
+      </div>
+      <div class="dial-hint">
+        Powered by <strong>tel:</strong> protocol · works on mobile &amp; Windows Phone Link ·
+        <a href="#how-it-works">learn more ↓</a>
+      </div>
+    </div>
+
+    <div class="scroll-hint">
+      <span>Scroll to learn more</span>
+      <div class="scroll-arrow"></div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- What it does -->
+  <section class="section" id="how-it-works">
+    <div class="section-tag">How It Works</div>
+    <h2>One URL. Instant Dialing.</h2>
+    <p>
+      The standard <code style="color:var(--accent)">tel:</code> protocol lets browsers open the native phone dialer —
+      on mobile it dials directly, on Windows it launches <strong>Phone Link</strong>.
+      This service bridges the gap for tools like Google Sheets that don't support
+      <code style="color:var(--accent)">tel:</code> in hyperlinks directly.
+    </p>
+
+    <div class="card-grid">
+      <div class="card">
+        <div class="card-icon">📊</div>
+        <h3>Google Sheets</h3>
+        <p>Use the HYPERLINK formula to create one-click call buttons inside any spreadsheet.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">📄</div>
+        <h3>Google Docs</h3>
+        <p>Insert a link using Ctrl+K and point it to this service with the number in the URL.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">🖥️</div>
+        <h3>Web Pages</h3>
+        <p>Embed this URL as an anchor href on any website for a cross-platform call button.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">📱</div>
+        <h3>Mobile</h3>
+        <p>On iOS or Android, clicking the link opens the native dialer with the number pre-filled.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- Typing numbers in Sheets -->
+  <section class="section" id="sheets-typing">
+    <div class="section-tag">Google Sheets Tips</div>
+    <h2>How to Type Phone Numbers in Google Sheets</h2>
+    <p>
+      Phone numbers with a leading <code style="color:var(--accent)">+</code> sign confuse Sheets — it thinks you're starting a formula.
+      Use one of these two workarounds:
+    </p>
+    <div class="workaround">
+      <span class="workaround-badge">Option A</span>
+      Wrap in double quotes with an equals sign: <code style="color:var(--green); font-family:JetBrains Mono,monospace; margin-left:8px;">= "+1 650 253 0000"</code>
+    </div>
+    <div class="workaround">
+      <span class="workaround-badge">Option B</span>
+      Prefix with a single quote: <code style="color:var(--green); font-family:JetBrains Mono,monospace; margin-left:8px;">' +1 650 253 0000</code> — treats cell as text
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- Google Sheets Formula -->
+  <section class="section" id="sheets-formula">
+    <div class="section-tag">Google Sheets · HYPERLINK Formula</div>
+    <h2>Make Phone Numbers Clickable in Google Sheets</h2>
+    <p>
+      Google Sheets blocks <code style="color:var(--accent)">tel:</code> in the HYPERLINK function. The workaround is to
+      point your HYPERLINK to <strong>this page</strong> with the number as a query parameter —
+      it will instantly redirect to <code style="color:var(--accent)">tel:</code> and close the tab.
+    </p>
+
+    <h3>Basic formula (hardcoded number)</h3>
+    <div class="code-block" id="code1">
+      <button class="copy-btn" onclick="copyCode('code1')">Copy</button>
+      =HYPERLINK(<span class="str">"https://YOUR_DOMAIN/?number=+16502530000"</span>, <span class="str">"Call Google"</span>)
+    </div>
+
+    <h3>Dynamic formula (number in column B, name in column A)</h3>
+    <div class="code-block" id="code2">
+      <button class="copy-btn" onclick="copyCode('code2')">Copy</button>
+      =HYPERLINK(<span class="str">"https://YOUR_DOMAIN/?number="</span>&amp;B2, A2)
+    </div>
+
+    <p>
+      Replace <code style="color:var(--accent)">YOUR_DOMAIN</code> with the actual domain where this page is hosted
+      (e.g. <code style="color:var(--green)">call.example.com</code>).
+      Drag the formula down to apply it to the whole column.
+    </p>
+
+    <h3>Example layout</h3>
+    <div class="code-block">
+      <span class="comment">| A (Name)        | B (Number)        | C (Formula)                                |</span><br/>
+      <span class="comment">|-----------------|-------------------|--------------------------------------------|</span><br/>
+      Google Support   | +1 650 253 0000   | =HYPERLINK("…/?number="&amp;B2, A2)<br/>
+      Acme Corp        | +44 20 7946 0958  | =HYPERLINK("…/?number="&amp;B3, A3)
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- Google Docs & Slides -->
+  <section class="section" id="docs-slides">
+    <div class="section-tag">Google Docs &amp; Slides</div>
+    <h2>Clickable Numbers in Docs &amp; Slides</h2>
+    <p>You don't need a formula here — just the Insert Link feature.</p>
+
+    <ul class="steps">
+      <li>
+        <div class="step-num"></div>
+        <div class="step-body">
+          <h3>Write the phone number (or a label)</h3>
+          <p>Type the display text you want in your document, e.g. <em>Call Support: +1 650 253 0000</em></p>
+        </div>
+      </li>
+      <li>
+        <div class="step-num"></div>
+        <div class="step-body">
+          <h3>Select the text</h3>
+          <p>Highlight the phone number or label you just typed.</p>
+        </div>
+      </li>
+      <li>
+        <div class="step-num"></div>
+        <div class="step-body">
+          <h3>Open the Link dialog</h3>
+          <p>Press <kbd style="background:var(--surface);border:1px solid var(--border);padding:2px 6px;border-radius:4px;font-size:0.85rem">Ctrl+K</kbd> (or Insert → Link).</p>
+        </div>
+      </li>
+      <li>
+        <div class="step-num"></div>
+        <div class="step-body">
+          <h3>Paste the URL with the number</h3>
+          <p>Enter: <code style="color:var(--green); font-family:JetBrains Mono,monospace">https://YOUR_DOMAIN/?number=+16502530000</code></p>
+        </div>
+      </li>
+      <li>
+        <div class="step-num"></div>
+        <div class="step-body">
+          <h3>Click Apply — done!</h3>
+          <p>The text is now a clickable link that launches the phone dialer.</p>
+        </div>
+      </li>
+    </ul>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- Web pages -->
+  <section class="section" id="web-pages">
+    <div class="section-tag">Web Pages &amp; HTML</div>
+    <h2>Callable Phone Links on Any Website</h2>
+    <p>
+      On websites you fully control, you can use the <code style="color:var(--accent)">tel:</code> URI directly — no redirect needed.
+      The browser will hand off to the native dialer or Phone Link.
+    </p>
+    <div class="code-block" id="code3">
+      <button class="copy-btn" onclick="copyCode('code3')">Copy</button>
+      <span class="comment">&lt;!-- Simple tel: link --&gt;</span><br/>
+      &lt;<span class="kw">a</span> <span class="fn">href</span>=<span class="str">"tel:+16502530000"</span>&gt;Call Google Support&lt;/<span class="kw">a</span>&gt;<br/><br/>
+      <span class="comment">&lt;!-- Or use this redirector for analytics / logging --&gt;</span><br/>
+      &lt;<span class="kw">a</span> <span class="fn">href</span>=<span class="str">"https://YOUR_DOMAIN/?number=+16502530000"</span>&gt;Call Google Support&lt;/<span class="kw">a</span>&gt;
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- Technical Details -->
+  <section class="section" id="technical">
+    <div class="section-tag">Technical Details</div>
+    <h2>How This Redirector Works</h2>
+    <p>
+      When the URL contains a <code style="color:var(--accent)">?number=</code> query parameter, this page skips the
+      landing UI entirely, fires a hidden <code style="color:var(--accent)">tel:</code> anchor click, and then calls
+      <code style="color:var(--accent)">window.close()</code> after a short delay so the tab disappears automatically.
+    </p>
+    <p>
+      Everything runs client-side in this single HTML file — no server, no backend, no tracking.
+    </p>
+    <div class="code-block" id="code4">
+      <button class="copy-btn" onclick="copyCode('code4')">Copy</button>
+      <span class="comment">// Core redirect logic (runs on page load)</span><br/>
+      <span class="kw">const</span> params = <span class="kw">new</span> <span class="fn">URLSearchParams</span>(location.search);<br/>
+      <span class="kw">const</span> number = params.<span class="fn">get</span>(<span class="str">'number'</span>).<span class="fn">replace</span>(/[^0-9+]/g, <span class="str">''</span>);<br/>
+      <br/>
+      <span class="kw">const</span> a = document.<span class="fn">createElement</span>(<span class="str">'a'</span>);<br/>
+      a.href = <span class="str">`tel:${number}`</span>;<br/>
+      a.<span class="fn">click</span>();                <span class="comment">// opens Phone Link / mobile dialer</span><br/>
+      <span class="fn">setTimeout</span>(() =&gt; window.<span class="fn">close</span>(), <span class="str">1800</span>); <span class="comment">// auto-close tab</span>
+    </div>
+  </section>
+
+  <footer>
+    <p>Built with ❤️ · Fully open-source · Zero tracking · Works offline after first load</p>
+    <p style="margin-top:8px">
+      Inspired by <a href="https://call.ctrlq.org" target="_blank" rel="noopener">call.ctrlq.org</a>
+    </p>
+  </footer>
+
+</div><!-- end #landing -->
+
+<script>
+  // ─── CONFIG — override when HTML is hosted separately from the API ─
+  const WEBHOOK_URL = (() => {
+    const origin = window.location.origin;
+    if (origin && origin !== 'null' && !origin.startsWith('file:')) {
+      return origin + '/call';
+    }
+    return 'https://YOUR-SERVER.railway.app/call';
+  })();
+
+  function setCallSuccess(msg) {
+    document.getElementById('ring-icon').textContent = '✅';
+    document.getElementById('ring-icon').className = 'call-ring success';
+    const s = document.getElementById('status-line');
+    s.innerHTML = msg;
+    s.className = 'ok';
+    document.getElementById('close-hint').textContent = 'This tab will close shortly.';
+  }
+
+  function setCallError(msg) {
+    document.getElementById('ring-icon').textContent = '❌';
+    document.getElementById('ring-icon').className = 'call-ring error';
+    const s = document.getElementById('status-line');
+    s.innerHTML = msg;
+    s.className = 'err';
+    document.getElementById('close-hint').textContent = 'You can close this tab.';
+  }
+
+  function showCallingScreen() {
+    document.getElementById('landing').style.display = 'none';
+    document.getElementById('calling-screen').classList.add('active');
+  }
+
+  // ─── REDIRECT LOGIC (?number= and/or ?agent=) ─────────────────
+  (async function () {
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get('number');
+    const agentId = params.get('agent');
+
+    if (!raw && !agentId) return;
+
+    showCallingScreen();
+
+    // CallBridge: POST to webhook → agent's Android dials
+    if (agentId) {
+      const number = (raw || '').replace(/\s+/g, '').replace(/[^0-9+]/g, '');
+      document.getElementById('cs-number').textContent = number || '—';
+      document.title = 'Routing call to ' + agentId + '…';
+      document.getElementById('status-line').innerHTML =
+        '<span class="spinner"></span> Routing to your phone…';
+
+      if (!number) {
+        setCallError('No phone number provided in the URL.');
+        return;
+      }
+
+      try {
+        const res = await fetch(WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agentId, number })
+        });
+        const data = await res.json();
+
+        if (res.ok && data.success) {
+          setCallSuccess(`Sent to ${agentId}'s phone. They'll dial now.`);
+          setTimeout(() => window.close(), 2500);
+        } else {
+          setCallError(data.error || 'Server error. Try again.');
+        }
+      } catch (err) {
+        setCallError('Could not reach CallBridge server. Check your connection.');
+      }
+      return;
+    }
+
+    // PhoneLink: open tel: on this device
+    const number = raw.replace(/\s+/g, '').replace(/[^0-9+]/g, '');
+    document.getElementById('cs-number').textContent = number;
+    document.title = 'Calling ' + number + '…';
+    document.getElementById('status-line').textContent = 'Opening dialer…';
+
+    const a = document.createElement('a');
+    a.href = 'tel:' + number;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+
+    setTimeout(() => {
+      window.close();
+      document.getElementById('close-hint').textContent = 'You can close this tab now.';
+    }, 1800);
+  })();
+
+  // ─── MANUAL DIAL (from landing page input) ────────────────────
+  function manualDial() {
+    const raw = document.getElementById('phone-input').value.trim();
+    if (!raw) {
+      document.getElementById('phone-input').focus();
+      return;
+    }
+    const number = raw.replace(/\s+/g, '').replace(/[^0-9+]/g, '');
+    if (!number) {
+      alert('Please enter a valid phone number.');
+      return;
+    }
+    // Redirect this page to itself with ?number= — triggers the redirect logic
+    window.location.href = window.location.origin + window.location.pathname + '?number=' + encodeURIComponent(number);
+  }
+
+  // Allow pressing Enter in the input
+  document.getElementById('phone-input').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') manualDial();
+  });
+
+  // ─── COPY CODE BUTTONS ────────────────────────────────────────
+  function copyCode(id) {
+    const el = document.getElementById(id);
+    const btn = el.querySelector('.copy-btn');
+    // Get text without the button text
+    const clone = el.cloneNode(true);
+    clone.querySelectorAll('.copy-btn').forEach(b => b.remove());
+    const text = clone.innerText.trim();
+    navigator.clipboard.writeText(text).then(() => {
+      btn.textContent = 'Copied!';
+      btn.classList.add('copied');
+      setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
+    });
+  }
+</script>
+</body>
+</html>
