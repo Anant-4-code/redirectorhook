@@ -2,6 +2,13 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+
+// Node 18+ has global fetch. In some hosts/buildpacks Node may be older.
+// Fallback to node-fetch (lazy import) so /call failures are actionable.
+const fetchFn =
+  typeof globalThis.fetch === 'function'
+    ? globalThis.fetch.bind(globalThis)
+    : (...args) => import('node-fetch').then(({ default: f }) => f(...args));
 const {
   deriveAgentSecret,
   encryptNumber,
@@ -95,7 +102,7 @@ function saveAgent(agentId, topic) {
 }
 
 async function pushToNtfy(topic, messageBody) {
-  const response = await fetch(`https://ntfy.sh/${topic}`, {
+  const response = await fetchFn(`https://ntfy.sh/${topic}`, {
     method: 'POST',
     headers: {
       Title: 'Incoming Call',
