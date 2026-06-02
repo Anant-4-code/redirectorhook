@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const { generateSecret, encryptNumber, isEncryptedPayload } = require('./crypto');
 
 const app = express();
 
@@ -9,7 +10,6 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
-// Persist agents to disk (survives restarts if Railway volume or local file exists)
 const AGENTS_FILE = process.env.AGENTS_FILE
   || path.join(process.env.DATA_DIR || __dirname, 'agents.json');
 
@@ -40,9 +40,43 @@ function saveAgents() {
   }
 }
 
+function agentKey(agentId) {
+  return agentId.toLowerCase();
+}
+
+/** Supports legacy string topic or { topic, secret }. */
+function getAgent(agentId) {
+  const entry = agents[agentKey(agentId)];
+  if (!entry) return null;
+  if (typeof entry === 'string') {
+    return { topic: entry, secret: null };
+  }
+  return { topic: entry.topic, secret: entry.secret || null };
+}
+
+function saveAgent(agentId, topic, secret) {
+  agents[agentKey(agentId)] = { topic, secret };
+  saveAgents();
+}
+
+async function pushToNtfy(topic, encryptedMessage) {
+  const response = await fetch(`https://ntfy.sh/${topic}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message: encryptedMessage,
+      title: 'Incoming Call Request',
+      tags: ['phone'],
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`ntfy responded with ${response.status}`);
+  }
+}
+
 loadAgents();
 
-// ─── ROUTE 1: Agent registers their ntfy topic (one-time setup) ──
+// ─── Agent registers ntfy topic + receives encryption secret ─────
 app.post('/register', (req, res) => {
   const { agentId, ntfyTopic } = req.body;
 
@@ -50,46 +84,84 @@ app.post('/register', (req, res) => {
     return res.status(400).json({ error: 'agentId and ntfyTopic required' });
   }
 
-  agents[agentId.toLowerCase()] = ntfyTopic;
-  saveAgents();
+  const existing = getAgent(agentId);
+  const secret = existing?.secret || generateSecret();
+  saveAgent(agentId, ntfyTopic, secret);
+
   console.log(`✅ Registered: ${agentId} → ${ntfyTopic}`);
-  res.json({ success: true, message: `Agent ${agentId} registered` });
+  res.json({
+    success: true,
+    message: `Agent ${agentId} registered`,
+    agentSecret: secret,
+  });
 });
 
-// ─── ROUTE 2: Webhook — called by the redirector HTML page ───────
-app.post('/call', async (req, res) => {
-  const { agentId, number } = req.body;
+// ─── Build encrypted link for Google Sheets (API key required) ───
+app.post('/encrypt', (req, res) => {
+  const apiKey = req.headers['x-api-key'];
+  if (!process.env.SHEET_API_KEY || apiKey !== process.env.SHEET_API_KEY) {
+    return res.status(403).json({ error: 'Invalid or missing X-API-Key' });
+  }
 
+  const { agentId, number } = req.body;
   if (!agentId || !number) {
     return res.status(400).json({ error: 'agentId and number required' });
   }
 
-  const topic = agents[agentId.toLowerCase()];
-  if (!topic) {
+  const record = getAgent(agentId);
+  if (!record) {
+    return res.status(404).json({ error: `Agent "${agentId}" not registered` });
+  }
+  if (!record.secret) {
+    return res.status(400).json({ error: 'Agent must re-register in CallBridge app' });
+  }
+
+  const cleanNumber = String(number).replace(/[^0-9+]/g, '');
+  const e = encryptNumber(cleanNumber, record.secret);
+  const base = process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
+
+  res.json({
+    e,
+    url: `${base}/?agent=${encodeURIComponent(agentId)}&e=${encodeURIComponent(e)}`,
+  });
+});
+
+// ─── Webhook — number encrypted before ntfy; app decrypts ─────────
+app.post('/call', async (req, res) => {
+  const { agentId, number, e } = req.body;
+
+  if (!agentId || (!number && !e)) {
+    return res.status(400).json({ error: 'agentId and (number or e) required' });
+  }
+
+  const record = getAgent(agentId);
+  if (!record) {
     return res.status(404).json({
       error: `Agent "${agentId}" not registered. Open the CallBridge app on their phone once to sync.`,
     });
   }
 
-  const cleanNumber = number.replace(/[^0-9+]/g, '');
+  let encryptedPayload;
+
+  if (e) {
+    if (!isEncryptedPayload(e)) {
+      return res.status(400).json({ error: 'Invalid encrypted payload' });
+    }
+    encryptedPayload = e;
+  } else {
+    if (!record.secret) {
+      return res.status(400).json({
+        error: 'Agent must re-register in CallBridge app to enable encryption',
+      });
+    }
+    const cleanNumber = String(number).replace(/[^0-9+]/g, '');
+    encryptedPayload = encryptNumber(cleanNumber, record.secret);
+  }
 
   try {
-    const response = await fetch(`https://ntfy.sh/${topic}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: cleanNumber,
-        title: 'Incoming Call Request',
-        tags: ['phone'],
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`ntfy responded with ${response.status}`);
-    }
-
-    console.log(`📞 Call routed: ${agentId} → ${cleanNumber}`);
-    res.json({ success: true, routed: true, number: cleanNumber });
+    await pushToNtfy(record.topic, encryptedPayload);
+    console.log(`📞 Call routed (encrypted): ${agentId}`);
+    res.json({ success: true, routed: true, encrypted: true });
   } catch (err) {
     console.error('ntfy push failed:', err.message);
     res.status(500).json({ error: 'Failed to send push notification', detail: err.message });
@@ -104,6 +176,7 @@ app.get('/api', (req, res) => {
   res.json({
     status: 'CallBridge running',
     agents: Object.keys(agents).length,
+    encryption: true,
     agentsFile: AGENTS_FILE,
   });
 });
@@ -112,4 +185,5 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🌉 CallBridge webhook server running on port ${PORT}`);
   console.log(`   Agent registry: ${AGENTS_FILE}`);
+  console.log(`   Encryption: AES-256-GCM (decrypt on device only)`);
 });

@@ -65,3 +65,35 @@ Railway redeploys automatically on push to `main`.
 - **404 on /** — Ensure `index.html` and `server.js` are in the repo root on GitHub.
 - **Agent not registered** — Railway restarted and wiped the registry. Have the agent **open the CallBridge app** once (it re-syncs automatically). Or check `https://YOUR-URL/agents` — list should show their name after they open the app.
 - **Agents lost after every deploy** — Add a Railway **Volume** mounted at `/data`, then set variable `DATA_DIR=/data` on the service so `agents.json` survives redeploys.
+
+## Encryption (phone numbers hidden on the wire)
+
+Each agent gets a unique **AES-256 key** at registration. The server **encrypts only** — it never decrypts. Only the CallBridge app on that agent's phone can read the number.
+
+| Layer | What an attacker sees |
+|-------|------------------------|
+| ntfy message | `enc:v1:...` (gibberish) |
+| Encrypted sheet link (`?e=`) | No plain number in URL |
+| Plain sheet link (`?number=`) | Number visible in URL — server still encrypts before ntfy |
+
+### Railway variables for encrypted sheet links
+
+| Variable | Example | Purpose |
+|----------|---------|---------|
+| `SHEET_API_KEY` | long random string | Protects `/encrypt` endpoint |
+| `PUBLIC_URL` | `https://redirectorhook-production.up.railway.app` | Correct links from `/encrypt` |
+
+### Google Sheets — encrypted link (recommended)
+
+1. Add `SHEET_API_KEY` in Railway
+2. Copy `google-apps-script.gs` into **Extensions → Apps Script**
+3. Set your API key in the script
+4. Sheet formula:
+
+```excel
+=HYPERLINK(CALLBRIDGE_LINK("rahul", B2), "📞 Call")
+```
+
+### Re-register after deploy
+
+After updating encryption, every agent must **open CallBridge once** (or tap Re-register) to receive their `agentSecret`.

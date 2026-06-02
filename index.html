@@ -668,29 +668,34 @@
     const params = new URLSearchParams(window.location.search);
     const raw = params.get('number');
     const agentId = params.get('agent');
+    const encrypted = params.get('e');
 
-    if (!raw && !agentId) return;
+    if (!raw && !agentId && !encrypted) return;
 
     showCallingScreen();
 
-    // CallBridge: POST to webhook → agent's Android dials
+    // CallBridge: POST to webhook → agent's Android dials (encrypted on wire)
     if (agentId) {
       const number = (raw || '').replace(/\s+/g, '').replace(/[^0-9+]/g, '');
-      document.getElementById('cs-number').textContent = number || '—';
+      document.getElementById('cs-number').textContent = encrypted ? '••••••••••' : (number || '—');
       document.title = 'Routing call to ' + agentId + '…';
       document.getElementById('status-line').innerHTML =
         '<span class="spinner"></span> Routing to your phone…';
 
-      if (!number) {
+      if (!encrypted && !number) {
         setCallError('No phone number provided in the URL.');
         return;
       }
 
       try {
+        const body = encrypted
+          ? { agentId, e: encrypted }
+          : { agentId, number };
+
         const res = await fetch(WEBHOOK_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agentId, number })
+          body: JSON.stringify(body)
         });
         const data = await res.json();
 
