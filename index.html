@@ -93,6 +93,32 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    #number-picker {
+      display: none;
+      flex-direction: column;
+      gap: 10px;
+      width: min(320px, 90vw);
+      margin-top: 8px;
+    }
+    #number-picker.visible { display: flex; }
+    .pick-btn {
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 1.05rem;
+      font-weight: 600;
+      padding: 14px 18px;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: border-color 0.2s, transform 0.15s;
+      text-align: center;
+    }
+    .pick-btn:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+    }
+
     /* ─── LANDING PAGE ─── */
     #landing { display: block; }
 
@@ -388,6 +414,7 @@
   <div class="call-ring" id="ring-icon">📞</div>
   <div class="call-number" id="cs-number"></div>
   <div id="status-line">Opening your phone dialer…</div>
+  <div id="number-picker" role="group" aria-label="Choose phone number"></div>
   <div class="call-close-hint" id="close-hint">This tab will close automatically.</div>
 </div>
 
@@ -630,6 +657,7 @@
 
 </div><!-- end #landing -->
 
+<script src="phone-utils.js"></script>
 <script>
   // ─── CONFIG — override when HTML is hosted separately from the API ─
   const WEBHOOK_URL = (() => {
@@ -682,6 +710,110 @@
     document.getElementById('calling-screen').classList.add('active');
   }
 
+  function showNumberPicker(numbers, onPick) {
+    const picker = document.getElementById('number-picker');
+    picker.innerHTML = '';
+    document.getElementById('ring-icon').textContent = '📱';
+    document.getElementById('ring-icon').className = 'call-ring';
+    document.getElementById('cs-number').textContent = 'Choose a number';
+    document.getElementById('status-line').textContent =
+      'This cell has more than one number. Tap the one to dial.';
+    document.getElementById('close-hint').textContent = '';
+
+    numbers.forEach((n) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'pick-btn';
+      btn.textContent = PhoneUtils.formatForDisplay(n);
+      btn.addEventListener('click', () => {
+        picker.classList.remove('visible');
+        picker.innerHTML = '';
+        onPick(n);
+      });
+      picker.appendChild(btn);
+    });
+    picker.classList.add('visible');
+  }
+
+  async function routeCallToAgent(agentId, plainNumber, encrypted) {
+    document.getElementById('cs-number').textContent = MASKED;
+    document.title = 'Routing call to ' + agentId + '…';
+    document.getElementById('status-line').innerHTML =
+      '<span class="spinner"></span> Securing & routing…';
+
+    if (!encrypted && !plainNumber) {
+      setCallError('No phone number provided in the URL.');
+      return;
+    }
+
+    try {
+      let sealed = encrypted;
+
+      if (!sealed && plainNumber) {
+        const sealRes = await fetch(SEAL_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agentId, number: plainNumber })
+        });
+        const sealData = await sealRes.json();
+        if (!sealRes.ok) {
+          setCallError(sealData.error || 'Could not encrypt number.');
+          return;
+        }
+        sealed = sealData.e;
+        history.replaceState(
+          null,
+          '',
+          '?agent=' + encodeURIComponent(agentId) + '&p=' + encodeURIComponent(sealed)
+        );
+      }
+
+      if (!sealed || !sealed.startsWith('enc:v1:')) {
+        setCallError('Invalid encrypted link. Open CallBridge → RE-REGISTER, then try again.');
+        return;
+      }
+
+      const res = await fetch(WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentId, p: sealed, e: sealed })
+      });
+      const data = await res.json();
+
+      if (res.ok && data.success) {
+        setCallSuccess(`Sent to ${agentId}'s phone. They'll dial now.`);
+        setTimeout(() => window.close(), 2500);
+      } else {
+        const err = data.error || 'Server error. Try again.';
+        const hint = err.includes('not registered')
+          ? ' Open CallBridge on that agent\'s phone (app re-syncs on open).'
+          : err.includes('re-register')
+          ? ' Open CallBridge and tap Re-register.'
+          : '';
+        setCallError(err + hint);
+      }
+    } catch (err) {
+      setCallError('Could not reach CallBridge server. Check your connection.');
+    }
+  }
+
+  function dialOnThisDevice(e164) {
+    document.getElementById('cs-number').textContent = PhoneUtils.formatForDisplay(e164);
+    document.title = 'Calling…';
+    document.getElementById('status-line').textContent = 'Opening dialer…';
+
+    const a = document.createElement('a');
+    a.href = 'tel:' + e164;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+
+    setTimeout(() => {
+      window.close();
+      document.getElementById('close-hint').textContent = 'You can close this tab now.';
+    }, 1800);
+  }
+
   // ─── REDIRECT LOGIC (?number= and/or ?agent=) ─────────────────
   (async function () {
     const params = new URLSearchParams(window.location.search);
@@ -693,90 +825,35 @@
 
     showCallingScreen();
 
-    // CallBridge: seal → strip number from URL → encrypted push → app decrypts
     if (agentId) {
-      const number = (raw || '').replace(/\s+/g, '').replace(/[^0-9+]/g, '');
-
-      // Never show the real number on this page
-      document.getElementById('cs-number').textContent = MASKED;
-      document.title = 'Routing call to ' + agentId + '…';
-      document.getElementById('status-line').innerHTML =
-        '<span class="spinner"></span> Securing & routing…';
-
-      if (!encrypted && !number) {
-        setCallError('No phone number provided in the URL.');
+      if (encrypted) {
+        await routeCallToAgent(agentId, null, encrypted);
         return;
       }
 
-      try {
-        let sealed = encrypted;
-
-        // Plain ?number= in sheet link → encrypt immediately & remove from address bar
-        if (!sealed && number) {
-          const sealRes = await fetch(SEAL_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ agentId, number })
-          });
-          const sealData = await sealRes.json();
-          if (!sealRes.ok) {
-            setCallError(sealData.error || 'Could not encrypt number.');
-            return;
-          }
-          sealed = sealData.e;
-          history.replaceState(
-            null,
-            '',
-            '?agent=' + encodeURIComponent(agentId) + '&p=' + encodeURIComponent(sealed)
-          );
-        }
-
-        if (!sealed || !sealed.startsWith('enc:v1:')) {
-          setCallError('Invalid encrypted link. Open CallBridge → RE-REGISTER, then try again.');
-          return;
-        }
-
-        const res = await fetch(WEBHOOK_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agentId, p: sealed, e: sealed })
-        });
-        const data = await res.json();
-
-        if (res.ok && data.success) {
-          setCallSuccess(`Sent to ${agentId}'s phone. They'll dial now.`);
-          setTimeout(() => window.close(), 2500);
-        } else {
-          const err = data.error || 'Server error. Try again.';
-          const hint = err.includes('not registered')
-            ? ' Open CallBridge on that agent\'s phone (app re-syncs on open).'
-            : err.includes('re-register')
-            ? ' Open CallBridge and tap Re-register.'
-            : '';
-          setCallError(err + hint);
-        }
-      } catch (err) {
-        setCallError('Could not reach CallBridge server. Check your connection.');
+      const candidates = PhoneUtils.parsePhoneList(raw || '');
+      if (candidates.length === 0) {
+        setCallError('No valid phone number in the link. Use 10 digits, 91…, or +91…');
+        return;
       }
+      if (candidates.length > 1) {
+        showNumberPicker(candidates, (chosen) => routeCallToAgent(agentId, chosen, null));
+        return;
+      }
+      await routeCallToAgent(agentId, candidates[0], null);
       return;
     }
 
-    // PhoneLink: open tel: on this device
-    const number = raw.replace(/\s+/g, '').replace(/[^0-9+]/g, '');
-    document.getElementById('cs-number').textContent = number;
-    document.title = 'Calling ' + number + '…';
-    document.getElementById('status-line').textContent = 'Opening dialer…';
-
-    const a = document.createElement('a');
-    a.href = 'tel:' + number;
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.click();
-
-    setTimeout(() => {
-      window.close();
-      document.getElementById('close-hint').textContent = 'You can close this tab now.';
-    }, 1800);
+    const candidates = PhoneUtils.parsePhoneList(raw || '');
+    if (candidates.length === 0) {
+      setCallError('No valid phone number in the link.');
+      return;
+    }
+    if (candidates.length > 1) {
+      showNumberPicker(candidates, dialOnThisDevice);
+      return;
+    }
+    dialOnThisDevice(candidates[0]);
   })();
 
   // ─── MANUAL DIAL (from landing page input) ────────────────────
@@ -786,9 +863,15 @@
       document.getElementById('phone-input').focus();
       return;
     }
-    const number = raw.replace(/\s+/g, '').replace(/[^0-9+]/g, '');
+    const candidates = PhoneUtils.parsePhoneList(raw);
+    if (candidates.length > 1) {
+      showCallingScreen();
+      showNumberPicker(candidates, dialOnThisDevice);
+      return;
+    }
+    const number = candidates[0] || PhoneUtils.normalizeIndianPhone(raw);
     if (!number) {
-      alert('Please enter a valid phone number.');
+      alert('Enter a valid Indian mobile (10 digits, 91…, or +91…).');
       return;
     }
     // Redirect this page to itself with ?number= — triggers the redirect logic

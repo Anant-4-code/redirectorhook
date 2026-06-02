@@ -8,6 +8,7 @@ const {
   isEncryptedPayload,
   normalizeEncryptedPayload,
 } = require('./crypto');
+const { parsePhoneList, normalizeIndianPhone } = require('./phone-utils');
 
 /** Use `p` in URLs — Google Sheets breaks `&e=` (HTML entity / truncation → `&te=`). */
 function readEncryptedFromQuery(query) {
@@ -32,9 +33,9 @@ app.get('/', (req, res, next) => {
   if (agent && number && !existingEnc) {
     const record = getAgent(String(agent));
     if (record?.secret) {
-      const clean = String(number).replace(/[^0-9+]/g, '');
-      if (clean) {
-        const enc = encryptNumber(clean, record.secret);
+      const candidates = parsePhoneList(String(number));
+      if (candidates.length === 1) {
+        const enc = encryptNumber(candidates[0], record.secret);
         const q = `agent=${encodeURIComponent(agent)}&p=${encodeURIComponent(enc)}`;
         return res.redirect(302, `/?${q}`);
       }
@@ -143,7 +144,10 @@ app.post('/seal', (req, res) => {
   if (!record) {
     return res.status(404).json({ error: `Agent "${agentId}" not registered` });
   }
-  const cleanNumber = String(number).replace(/[^0-9+]/g, '');
+  const cleanNumber = normalizeIndianPhone(number);
+  if (!cleanNumber) {
+    return res.status(400).json({ error: 'Invalid phone number' });
+  }
   const e = encryptNumber(cleanNumber, deriveAgentSecret(agentId));
   res.json({ e, encrypted: true });
 });
@@ -164,7 +168,10 @@ app.post('/encrypt', (req, res) => {
   if (!record) {
     return res.status(404).json({ error: `Agent "${agentId}" not registered` });
   }
-  const cleanNumber = String(number).replace(/[^0-9+]/g, '');
+  const cleanNumber = normalizeIndianPhone(number);
+  if (!cleanNumber) {
+    return res.status(400).json({ error: 'Invalid phone number' });
+  }
   const e = encryptNumber(cleanNumber, deriveAgentSecret(agentId));
   const base = process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
 
@@ -199,7 +206,10 @@ app.post('/call', async (req, res) => {
     }
     encryptedPayload = encFromBody;
   } else {
-    const cleanNumber = String(number).replace(/[^0-9+]/g, '');
+    const cleanNumber = normalizeIndianPhone(number);
+    if (!cleanNumber) {
+      return res.status(400).json({ error: 'Invalid phone number' });
+    }
     encryptedPayload = encryptNumber(cleanNumber, deriveAgentSecret(agentId));
   }
 
