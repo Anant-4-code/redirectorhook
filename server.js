@@ -96,6 +96,26 @@ app.post('/register', (req, res) => {
   });
 });
 
+// ─── Seal number for URL (no plain number in address bar) ──────────
+app.post('/seal', (req, res) => {
+  const { agentId, number } = req.body;
+  if (!agentId || !number) {
+    return res.status(400).json({ error: 'agentId and number required' });
+  }
+
+  const record = getAgent(agentId);
+  if (!record) {
+    return res.status(404).json({ error: `Agent "${agentId}" not registered` });
+  }
+  if (!record.secret) {
+    return res.status(400).json({ error: 'Agent must re-register in CallBridge app' });
+  }
+
+  const cleanNumber = String(number).replace(/[^0-9+]/g, '');
+  const e = encryptNumber(cleanNumber, record.secret);
+  res.json({ e, encrypted: true });
+});
+
 // ─── Build encrypted link for Google Sheets (API key required) ───
 app.post('/encrypt', (req, res) => {
   const apiKey = req.headers['x-api-key'];

@@ -640,6 +640,16 @@
     return 'https://YOUR-SERVER.railway.app/call';
   })();
 
+  const SEAL_URL = (() => {
+    const origin = window.location.origin;
+    if (origin && origin !== 'null' && !origin.startsWith('file:')) {
+      return origin + '/seal';
+    }
+    return 'https://YOUR-SERVER.railway.app/seal';
+  })();
+
+  const MASKED = '••••••••••';
+
   function setCallSuccess(msg) {
     document.getElementById('ring-icon').textContent = '✅';
     document.getElementById('ring-icon').className = 'call-ring success';
@@ -674,13 +684,15 @@
 
     showCallingScreen();
 
-    // CallBridge: POST to webhook → agent's Android dials (encrypted on wire)
+    // CallBridge: seal → strip number from URL → encrypted push → app decrypts
     if (agentId) {
       const number = (raw || '').replace(/\s+/g, '').replace(/[^0-9+]/g, '');
-      document.getElementById('cs-number').textContent = encrypted ? '••••••••••' : (number || '—');
+
+      // Never show the real number on this page
+      document.getElementById('cs-number').textContent = MASKED;
       document.title = 'Routing call to ' + agentId + '…';
       document.getElementById('status-line').innerHTML =
-        '<span class="spinner"></span> Routing to your phone…';
+        '<span class="spinner"></span> Securing & routing…';
 
       if (!encrypted && !number) {
         setCallError('No phone number provided in the URL.');
@@ -688,14 +700,32 @@
       }
 
       try {
-        const body = encrypted
-          ? { agentId, e: encrypted }
-          : { agentId, number };
+        let sealed = encrypted;
+
+        // Plain ?number= in sheet link → encrypt immediately & remove from address bar
+        if (!sealed && number) {
+          const sealRes = await fetch(SEAL_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agentId, number })
+          });
+          const sealData = await sealRes.json();
+          if (!sealRes.ok) {
+            setCallError(sealData.error || 'Could not encrypt number.');
+            return;
+          }
+          sealed = sealData.e;
+          history.replaceState(
+            null,
+            '',
+            '?agent=' + encodeURIComponent(agentId) + '&e=' + encodeURIComponent(sealed)
+          );
+        }
 
         const res = await fetch(WEBHOOK_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
+          body: JSON.stringify({ agentId, e: sealed })
         });
         const data = await res.json();
 
@@ -706,6 +736,8 @@
           const err = data.error || 'Server error. Try again.';
           const hint = err.includes('not registered')
             ? ' Open CallBridge on that agent\'s phone (app re-syncs on open).'
+            : err.includes('re-register')
+            ? ' Open CallBridge and tap Re-register.'
             : '';
           setCallError(err + hint);
         }
