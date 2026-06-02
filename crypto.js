@@ -27,4 +27,18 @@ function isEncryptedPayload(value) {
   return typeof value === 'string' && value.startsWith(PREFIX);
 }
 
-module.exports = { generateSecret, encryptNumber, isEncryptedPayload, PREFIX };
+/** Fix Express/query parsers turning '+' into spaces in the ciphertext. */
+function normalizeEncryptedPayload(value) {
+  if (typeof value !== 'string') return value;
+  const s = value.trim();
+  if (!s.startsWith(PREFIX)) return s;
+  return s.replace(/ /g, '+');
+}
+
+module.exports = {
+  generateSecret,
+  encryptNumber,
+  isEncryptedPayload,
+  normalizeEncryptedPayload,
+  PREFIX,
+};

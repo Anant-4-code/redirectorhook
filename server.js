@@ -2,23 +2,40 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
-const { generateSecret, encryptNumber, isEncryptedPayload } = require('./crypto');
+const {
+  generateSecret,
+  encryptNumber,
+  isEncryptedPayload,
+  normalizeEncryptedPayload,
+} = require('./crypto');
+
+/** Use `p` in URLs — Google Sheets breaks `&e=` (HTML entity / truncation → `&te=`). */
+function readEncryptedFromQuery(query) {
+  const raw = query.p || query.e || query.te;
+  return raw ? normalizeEncryptedPayload(String(raw)) : null;
+}
+
+function readEncryptedFromBody(body) {
+  const raw = body.p || body.e;
+  return raw ? normalizeEncryptedPayload(String(raw)) : null;
+}
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 
-// Strip plain number from URL before page loads (302 → ?e=enc:v1:...)
+// Strip plain number from URL before page loads (302 → ?p=enc:v1:...)
 app.get('/', (req, res, next) => {
-  const { agent, number, e } = req.query;
-  if (agent && number && !e) {
+  const { agent, number } = req.query;
+  const existingEnc = readEncryptedFromQuery(req.query);
+  if (agent && number && !existingEnc) {
     const record = getAgent(String(agent));
     if (record?.secret) {
       const clean = String(number).replace(/[^0-9+]/g, '');
       if (clean) {
         const enc = encryptNumber(clean, record.secret);
-        const q = `agent=${encodeURIComponent(agent)}&e=${encodeURIComponent(enc)}`;
+        const q = `agent=${encodeURIComponent(agent)}&p=${encodeURIComponent(enc)}`;
         return res.redirect(302, `/?${q}`);
       }
     }
@@ -160,16 +177,18 @@ app.post('/encrypt', (req, res) => {
 
   res.json({
     e,
-    url: `${base}/?agent=${encodeURIComponent(agentId)}&e=${encodeURIComponent(e)}`,
+    p: e,
+    url: `${base}/?agent=${encodeURIComponent(agentId)}&p=${encodeURIComponent(e)}`,
   });
 });
 
 // ─── Webhook — number encrypted before ntfy; app decrypts ─────────
 app.post('/call', async (req, res) => {
-  const { agentId, number, e } = req.body;
+  const { agentId, number } = req.body;
+  const encFromBody = readEncryptedFromBody(req.body);
 
-  if (!agentId || (!number && !e)) {
-    return res.status(400).json({ error: 'agentId and (number or e) required' });
+  if (!agentId || (!number && !encFromBody)) {
+    return res.status(400).json({ error: 'agentId and (number or encrypted p) required' });
   }
 
   const record = getAgent(agentId);
@@ -181,11 +200,11 @@ app.post('/call', async (req, res) => {
 
   let encryptedPayload;
 
-  if (e) {
-    if (!isEncryptedPayload(e)) {
-      return res.status(400).json({ error: 'Invalid encrypted payload' });
+  if (encFromBody) {
+    if (!isEncryptedPayload(encFromBody)) {
+      return res.status(400).json({ error: 'Invalid encrypted payload — use Re-register in app' });
     }
-    encryptedPayload = e;
+    encryptedPayload = encFromBody;
   } else {
     if (!record.secret) {
       return res.status(400).json({

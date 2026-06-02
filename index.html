@@ -650,6 +650,15 @@
 
   const MASKED = '••••••••••';
 
+  /** Read encrypted blob — param `p` (Sheets-safe); also accept legacy e / broken te */
+  function readEncryptedParam(params) {
+    const raw = params.get('p') || params.get('e') || params.get('te');
+    if (!raw) return null;
+    const s = raw.trim();
+    if (!s.startsWith('enc:v1:')) return null;
+    return s.replace(/ /g, '+');
+  }
+
   function setCallSuccess(msg) {
     document.getElementById('ring-icon').textContent = '✅';
     document.getElementById('ring-icon').className = 'call-ring success';
@@ -678,7 +687,7 @@
     const params = new URLSearchParams(window.location.search);
     const raw = params.get('number');
     const agentId = params.get('agent');
-    const encrypted = params.get('e');
+    const encrypted = readEncryptedParam(params);
 
     if (!raw && !agentId && !encrypted) return;
 
@@ -718,14 +727,19 @@
           history.replaceState(
             null,
             '',
-            '?agent=' + encodeURIComponent(agentId) + '&e=' + encodeURIComponent(sealed)
+            '?agent=' + encodeURIComponent(agentId) + '&p=' + encodeURIComponent(sealed)
           );
+        }
+
+        if (!sealed || !sealed.startsWith('enc:v1:')) {
+          setCallError('Invalid encrypted link. Open CallBridge → RE-REGISTER, then try again.');
+          return;
         }
 
         const res = await fetch(WEBHOOK_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agentId, e: sealed })
+          body: JSON.stringify({ agentId, p: sealed, e: sealed })
         });
         const data = await res.json();
 
