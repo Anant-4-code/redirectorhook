@@ -2,8 +2,18 @@ const crypto = require('crypto');
 
 const PREFIX = 'enc:v1:';
 
+/** Same pepper as Android app — both sides derive identical key per agent name. */
+const PEPPER = process.env.CALLBRIDGE_PEPPER || 'callbridge-shared-key-v1';
+
+function deriveAgentSecret(agentId) {
+  return crypto
+    .createHmac('sha256', PEPPER)
+    .update(String(agentId).toLowerCase())
+    .digest('hex');
+}
+
 function generateSecret() {
-  return crypto.randomBytes(32).toString('hex');
+  return deriveAgentSecret('legacy');
 }
 
 /** AES-256-GCM — server encrypts only; never decrypts. */
@@ -36,6 +46,7 @@ function normalizeEncryptedPayload(value) {
 }
 
 module.exports = {
+  deriveAgentSecret,
   generateSecret,
   encryptNumber,
   isEncryptedPayload,

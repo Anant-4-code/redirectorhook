@@ -3,7 +3,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const {
-  generateSecret,
+  deriveAgentSecret,
   encryptNumber,
   isEncryptedPayload,
   normalizeEncryptedPayload,
@@ -79,34 +79,35 @@ function agentKey(agentId) {
   return agentId.toLowerCase();
 }
 
-/** Supports legacy string topic or { topic, secret }. */
+/** Supports legacy string topic or { topic }. Secret is always derived from agent name. */
 function getAgent(agentId) {
   const entry = agents[agentKey(agentId)];
   if (!entry) return null;
-  if (typeof entry === 'string') {
-    return { topic: entry, secret: null };
-  }
-  return { topic: entry.topic, secret: entry.secret || null };
+  const topic = typeof entry === 'string' ? entry : entry.topic;
+  if (!topic) return null;
+  return { topic, secret: deriveAgentSecret(agentId) };
 }
 
-function saveAgent(agentId, topic, secret) {
-  agents[agentKey(agentId)] = { topic, secret };
+function saveAgent(agentId, topic) {
+  agents[agentKey(agentId)] = { topic };
   saveAgents();
 }
 
-async function pushToNtfy(topic, encryptedMessage) {
+async function pushToNtfy(topic, messageBody) {
   const response = await fetch(`https://ntfy.sh/${topic}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      message: encryptedMessage,
-      title: 'Incoming Call Request',
-      tags: ['phone'],
-    }),
+    headers: {
+      Title: 'Incoming Call',
+      Tags: 'phone',
+      Priority: 'high',
+    },
+    body: messageBody,
   });
   if (!response.ok) {
-    throw new Error(`ntfy responded with ${response.status}`);
+    const text = await response.text().catch(() => '');
+    throw new Error(`ntfy responded with ${response.status}: ${text}`);
   }
+  console.log(`   ntfy OK → topic ${topic}`);
 }
 
 loadAgents();
@@ -119,15 +120,15 @@ app.post('/register', (req, res) => {
     return res.status(400).json({ error: 'agentId and ntfyTopic required' });
   }
 
-  const existing = getAgent(agentId);
-  const secret = existing?.secret || generateSecret();
-  saveAgent(agentId, ntfyTopic, secret);
+  saveAgent(agentId, ntfyTopic);
+  const secret = deriveAgentSecret(agentId);
 
   console.log(`✅ Registered: ${agentId} → ${ntfyTopic}`);
   res.json({
     success: true,
     message: `Agent ${agentId} registered`,
     agentSecret: secret,
+    topic: ntfyTopic,
   });
 });
 
@@ -142,12 +143,8 @@ app.post('/seal', (req, res) => {
   if (!record) {
     return res.status(404).json({ error: `Agent "${agentId}" not registered` });
   }
-  if (!record.secret) {
-    return res.status(400).json({ error: 'Agent must re-register in CallBridge app' });
-  }
-
   const cleanNumber = String(number).replace(/[^0-9+]/g, '');
-  const e = encryptNumber(cleanNumber, record.secret);
+  const e = encryptNumber(cleanNumber, deriveAgentSecret(agentId));
   res.json({ e, encrypted: true });
 });
 
@@ -167,12 +164,8 @@ app.post('/encrypt', (req, res) => {
   if (!record) {
     return res.status(404).json({ error: `Agent "${agentId}" not registered` });
   }
-  if (!record.secret) {
-    return res.status(400).json({ error: 'Agent must re-register in CallBridge app' });
-  }
-
   const cleanNumber = String(number).replace(/[^0-9+]/g, '');
-  const e = encryptNumber(cleanNumber, record.secret);
+  const e = encryptNumber(cleanNumber, deriveAgentSecret(agentId));
   const base = process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
 
   res.json({
@@ -206,13 +199,8 @@ app.post('/call', async (req, res) => {
     }
     encryptedPayload = encFromBody;
   } else {
-    if (!record.secret) {
-      return res.status(400).json({
-        error: 'Agent must re-register in CallBridge app to enable encryption',
-      });
-    }
     const cleanNumber = String(number).replace(/[^0-9+]/g, '');
-    encryptedPayload = encryptNumber(cleanNumber, record.secret);
+    encryptedPayload = encryptNumber(cleanNumber, deriveAgentSecret(agentId));
   }
 
   try {
