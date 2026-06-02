@@ -8,6 +8,24 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+
+// Strip plain number from URL before page loads (302 → ?e=enc:v1:...)
+app.get('/', (req, res, next) => {
+  const { agent, number, e } = req.query;
+  if (agent && number && !e) {
+    const record = getAgent(String(agent));
+    if (record?.secret) {
+      const clean = String(number).replace(/[^0-9+]/g, '');
+      if (clean) {
+        const enc = encryptNumber(clean, record.secret);
+        const q = `agent=${encodeURIComponent(agent)}&e=${encodeURIComponent(enc)}`;
+        return res.redirect(302, `/?${q}`);
+      }
+    }
+  }
+  next();
+});
+
 app.use(express.static(path.join(__dirname)));
 
 const AGENTS_FILE = process.env.AGENTS_FILE
