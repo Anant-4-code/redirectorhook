@@ -1,0 +1,14 @@
+# Self-hosted ntfy config — high throughput for CallBridge teams.
+# Docs: https://docs.ntfy.sh/config/
+
+base-url: "${NTFY_BASE_URL:-http://localhost:8090}"
+behind-proxy: true
+
+# Disable visitor attachment limits for team topics (self-hosted only).
+visitor-subscriber-rate-limiting: false
+
+cache-file: "/var/cache/ntfy/cache.db"
+cache-duration: "12h"
+
+# Tune if you need more than defaults on a large VPS.
+# keepalive-interval: "45s"

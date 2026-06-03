@@ -16,6 +16,11 @@ const {
   normalizeEncryptedPayload,
 } = require('./crypto');
 const { parsePhoneList, normalizeIndianPhone } = require('./phone-utils');
+const { checkCallLimit, limitConfig } = require('./call-limits');
+
+const NTFY_BASE_URL = (process.env.NTFY_BASE_URL || 'https://ntfy.sh').replace(/\/$/, '');
+const NTFY_PUSH_RETRIES = Math.min(5, Math.max(1, parseInt(process.env.NTFY_PUSH_RETRIES || '3', 10) || 3));
+const NTFY_PUSH_TIMEOUT_MS = parseInt(process.env.NTFY_PUSH_TIMEOUT_MS || '15000', 10) || 15000;
 
 /** Use `p` in URLs — Google Sheets breaks `&e=` (HTML entity / truncation → `&te=`). */
 function readEncryptedFromQuery(query) {
@@ -101,21 +106,71 @@ function saveAgent(agentId, topic) {
   saveAgents();
 }
 
+function ntfyPublishUrl(topic) {
+  return `${NTFY_BASE_URL}/${encodeURIComponent(topic)}`;
+}
+
+function isNtfyQuotaError(status, bodyText) {
+  return status === 429 && /quota|limit reached/i.test(bodyText || '');
+}
+
 async function pushToNtfy(topic, messageBody) {
-  const response = await fetchFn(`https://ntfy.sh/${topic}`, {
-    method: 'POST',
-    headers: {
-      Title: 'Incoming Call',
-      Tags: 'phone',
-      Priority: 'high',
-    },
-    body: messageBody,
-  });
-  if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    throw new Error(`ntfy responded with ${response.status}: ${text}`);
+  let lastErr = null;
+
+  for (let attempt = 1; attempt <= NTFY_PUSH_RETRIES; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), NTFY_PUSH_TIMEOUT_MS);
+
+    try {
+      const response = await fetchFn(ntfyPublishUrl(topic), {
+        method: 'POST',
+        headers: {
+          Title: 'Incoming Call',
+          Tags: 'phone',
+          Priority: 'high',
+        },
+        body: messageBody,
+        signal: controller.signal,
+      });
+
+      if (response.ok) {
+        console.log(`   ntfy OK → ${NTFY_BASE_URL} topic ${topic}`);
+        return;
+      }
+
+      const text = await response.text().catch(() => '');
+      const err = new Error(`ntfy responded with ${response.status}: ${text}`);
+      err.status = response.status;
+      err.quota = isNtfyQuotaError(response.status, text);
+
+      if (err.quota || response.status === 429) {
+        throw err;
+      }
+
+      lastErr = err;
+      if (attempt < NTFY_PUSH_RETRIES && response.status >= 500) {
+        await new Promise((r) => setTimeout(r, 200 * attempt));
+        continue;
+      }
+      throw err;
+    } catch (e) {
+      if (e.quota) throw e;
+      if (e.name === 'AbortError') {
+        lastErr = new Error(`ntfy request timed out after ${NTFY_PUSH_TIMEOUT_MS}ms`);
+      } else {
+        lastErr = e;
+      }
+      if (attempt < NTFY_PUSH_RETRIES) {
+        await new Promise((r) => setTimeout(r, 200 * attempt));
+        continue;
+      }
+      throw lastErr;
+    } finally {
+      clearTimeout(timer);
+    }
   }
-  console.log(`   ntfy OK → topic ${topic}`);
+
+  throw lastErr || new Error('ntfy push failed');
 }
 
 loadAgents();
@@ -137,6 +192,7 @@ app.post('/register', (req, res) => {
     message: `Agent ${agentId} registered`,
     agentSecret: secret,
     topic: ntfyTopic,
+    ntfyBaseUrl: NTFY_BASE_URL,
   });
 });
 
@@ -220,12 +276,32 @@ app.post('/call', async (req, res) => {
     encryptedPayload = encryptNumber(cleanNumber, deriveAgentSecret(agentId));
   }
 
+  const limited = checkCallLimit();
+  if (limited) {
+    return res.status(limited.status).json({
+      error: limited.error,
+      detail: limited.detail,
+    });
+  }
+
   try {
     await pushToNtfy(record.topic, encryptedPayload);
     console.log(`📞 Call routed (encrypted): ${agentId}`);
     res.json({ success: true, routed: true, encrypted: true });
   } catch (err) {
     console.error('ntfy push failed:', err.message);
+
+    if (err.quota) {
+      return res.status(503).json({
+        error: 'Push service daily limit reached (ntfy.sh free tier)',
+        detail: err.message,
+        fix:
+          'Set NTFY_BASE_URL to your own ntfy server (see docker-compose.ntfy.yml). '
+          + 'Self-hosted ntfy has no 250/day cap. Target capacity: 20 calls/sec, 25000/day.',
+        ntfyBaseUrl: NTFY_BASE_URL,
+      });
+    }
+
     res.status(500).json({ error: 'Failed to send push notification', detail: err.message });
   }
 });
@@ -240,6 +316,8 @@ app.get('/api', (req, res) => {
     agents: Object.keys(agents).length,
     encryption: true,
     agentsFile: AGENTS_FILE,
+    ntfyBaseUrl: NTFY_BASE_URL,
+    callLimits: limitConfig(),
   });
 });
 
@@ -247,5 +325,12 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🌉 CallBridge webhook server running on port ${PORT}`);
   console.log(`   Agent registry: ${AGENTS_FILE}`);
+  console.log(`   ntfy publish: ${NTFY_BASE_URL}`);
   console.log(`   Encryption: AES-256-GCM (decrypt on device only)`);
+  const limits = limitConfig();
+  if (limits.enabled) {
+    console.log(`   Call limits: ${limits.maxPerSecond}/sec, ${limits.maxPerDay}/day`);
+  } else {
+    console.log('   Call limits: off (use self-hosted ntfy for production volume)');
+  }
 });

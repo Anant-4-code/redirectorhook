@@ -59,6 +59,99 @@ git push origin main
 
 Railway redeploys automatically on push to `main`.
 
+## Fix 429 quota — self-hosted ntfy on Railway (step by step)
+
+Public **ntfy.sh** blocks you after the daily message quota (`429 limit reached`).  
+You need a **second Railway service** running your own ntfy, then point CallBridge at it.
+
+---
+
+### Part A — Deploy ntfy (new service)
+
+#### Option 1 — Docker image (fastest, no Git folder needed)
+
+1. Open [railway.app](https://railway.app) → your project (e.g. **awake-upliftment**).
+2. Click **+ New** → **Service** → **Docker Image**.
+3. Image name: `binwiederhier/ntfy:latest`
+4. Click the new service (name it **ntfy**).
+5. **Settings** → **Networking** → **Generate Domain**  
+   Copy the URL, e.g. `https://ntfy-production-xxxx.up.railway.app`  
+   This is your **NTFY domain** (no trailing slash).
+
+6. **Variables** tab — add:
+
+| Variable | Value |
+|----------|--------|
+| `NTFY_LISTEN_HTTP` | `:$PORT` |
+| `NTFY_BEHIND_PROXY` | `true` |
+| `NTFY_BASE_URL` | `https://ntfy-production-xxxx.up.railway.app` (your domain from step 5) |
+| `NTFY_CACHE_FILE` | `/data/cache.db` |
+
+Railway sets `PORT` automatically — `NTFY_LISTEN_HTTP=:$PORT` makes ntfy listen on the correct port.
+
+7. **Settings** → **Volumes** → **Add volume** → mount path `/data` (keeps ntfy cache across restarts).
+8. Wait until deploy status is **Online** (green).
+9. Test in browser: open your ntfy domain — you should see the ntfy web UI.
+
+#### Option 2 — From GitHub (`Redictorhook/ntfy/` folder)
+
+1. Push this repo so `Redictorhook/ntfy/Dockerfile` is on GitHub.
+2. **+ New** → **GitHub Repo** → same repo as CallBridge.
+3. Click the new service → **Settings** → **Root Directory** = `ntfy` (if repo root is `Redictorhook`, use `ntfy` inside that folder).
+4. Follow steps 5–9 from Option 1 (domain + variables + volume).
+
+---
+
+### Part B — Point CallBridge at your ntfy
+
+1. Click your existing **redirectorhook** service (CallBridge).
+2. Open **Variables**.
+3. Add or edit:
+
+| Variable | Value |
+|----------|--------|
+| `NTFY_BASE_URL` | `https://ntfy-production-xxxx.up.railway.app` (same as ntfy service, **no** trailing `/`) |
+
+4. Railway redeploys automatically (or click **Deploy**).
+5. Verify: open `https://YOUR-REDIRECTORHOOK-URL/api`  
+   JSON should include `"ntfyBaseUrl":"https://ntfy-production-xxxx.up.railway.app"` (not `https://ntfy.sh`).
+
+**Also:** push latest `server.js` to GitHub first if you have not since the quota fix.
+
+---
+
+### Part C — Every agent RE-REGISTER (Android)
+
+Each phone must learn the new ntfy server URL once.
+
+1. Open **CallBridge** app on the agent phone.
+2. On the main screen, tap the red button **↻ RE-REGISTER (reset device)**.
+3. Confirm when asked.
+4. Enter **Agent name** again (same name as before, e.g. `rahul`).
+5. Tap **Register & enable auto-dial**.
+6. Wait for “ready” / connected status.
+7. Repeat for **all 11 team phones**.
+
+**Sync only (without full reset):** tap **Sync with server** if shown — works only if the app already has the latest build with `ntfy_base_url` support. After quota fix, **RE-REGISTER** is safer.
+
+---
+
+### Part D — Quick test
+
+1. Open a call link: `https://YOUR-REDIRECTORHOOK-URL/?agent=AGENTNAME&number=9876543210`
+2. You should **not** see `ntfy responded with 429`.
+3. Agent phone should receive the call notification and dial.
+
+---
+
+### Optional CallBridge caps (usually leave OFF)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ENABLE_CALL_LIMITS` | off | Set `true` only if you want server-side caps |
+| `MAX_CALLS_PER_SECOND` | 20 | Burst limit |
+| `MAX_CALLS_PER_DAY` | 25000 | Daily limit |
+
 ## Troubleshooting
 
 - **502 / Application failed to respond** — Service → Deployments → View logs. Start command must be `npm start`.

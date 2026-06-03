@@ -1,0 +1,24 @@
+# Self-hosted ntfy — no ntfy.sh daily message quota.
+# Deploy on Railway, VPS, or Docker host, then set NTFY_BASE_URL on CallBridge.
+#
+#   docker compose -f docker-compose.ntfy.yml up -d
+#
+# Example: NTFY_BASE_URL=https://ntfy.yourdomain.com
+
+services:
+  ntfy:
+    image: binwiederhier/ntfy:latest
+    command: serve
+    environment:
+      - NTFY_BASE_URL=${NTFY_PUBLIC_URL:-http://localhost:8090}
+      - NTFY_BEHIND_PROXY=true
+      - NTFY_CACHE_FILE=/var/cache/ntfy/cache.db
+    volumes:
+      - ntfy-cache:/var/cache/ntfy
+      - ./ntfy-server.yml:/etc/ntfy/server.yml:ro
+    ports:
+      - "8090:80"
+    restart: unless-stopped
+
+volumes:
+  ntfy-cache:

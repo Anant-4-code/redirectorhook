@@ -1,0 +1,5 @@
+# Railway / reverse-proxy friendly ntfy config (no ntfy.sh daily quota).
+behind-proxy: true
+visitor-subscriber-rate-limiting: false
+cache-file: "/data/cache.db"
+cache-duration: "12h"

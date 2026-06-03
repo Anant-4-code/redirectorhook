@@ -784,8 +784,11 @@
         setCallSuccess(`Sent to ${agentId}'s phone. They'll dial now.`);
         setTimeout(() => window.close(), 2500);
       } else {
-        const err = (data.error || 'Server error. Try again.')
+        let err = (data.error || 'Server error. Try again.')
           + (data.detail ? `<br/><small style="opacity:.85">(${String(data.detail)})</small>` : '');
+        if (data.fix) {
+          err += `<br/><small style="opacity:.85">${String(data.fix)}</small>`;
+        }
         const hint = err.includes('not registered')
           ? ' Open CallBridge on that agent\'s phone (app re-syncs on open).'
           : err.includes('re-register')
