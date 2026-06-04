@@ -18,7 +18,7 @@ const {
 const { parsePhoneList, normalizeIndianPhone } = require('./phone-utils');
 const { checkCallLimit, limitConfig } = require('./call-limits');
 
-const NTFY_BASE_URL = (process.env.NTFY_BASE_URL || 'https://ntfy.sh').replace(/\/$/, '');
+const NTFY_BASE_URL = (process.env.NTFY_BASE_URL || 'https://ntfy.sh').trim().replace(/\/$/, '');
 const NTFY_PUSH_RETRIES = Math.min(5, Math.max(1, parseInt(process.env.NTFY_PUSH_RETRIES || '3', 10) || 3));
 const NTFY_PUSH_TIMEOUT_MS = parseInt(process.env.NTFY_PUSH_TIMEOUT_MS || '15000', 10) || 15000;
 
@@ -236,7 +236,7 @@ app.post('/encrypt', (req, res) => {
     return res.status(400).json({ error: 'Invalid phone number' });
   }
   const e = encryptNumber(cleanNumber, deriveAgentSecret(agentId));
-  const base = process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
+  const base = (process.env.PUBLIC_URL || '').trim().replace(/\/$/, '') || `${req.protocol}://${req.get('host')}`;
 
   res.json({
     e,
